@@ -1,0 +1,517 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  python3.9
+  SAM Template for a Lambda Proxy
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+
+Parameters:
+  StageName:
+    # This ends up being part of the URI. Not sure how significant this is at the moment but maybe add versioning/environments later.
+    Type: String
+    Description: API Gateway Stage Name
+    Default: Dev
+
+  EnvironmentName:
+    Type: String
+    Description: An environment name that is prefixed to resource names
+    Default: Dev
+
+  VPCName:
+    Type: String
+    Description: The friendly name for the VPC
+    Default: NSMBenefits
+
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.192.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.192.10.0/24
+
+  PublicSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet in the second Availability Zone
+    Type: String
+    Default: 10.192.11.0/24
+
+  PrivateSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the first Availability Zone
+    Type: String
+    Default: 10.192.20.0/24
+
+  PrivateSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet in the second Availability Zone
+    Type: String
+    Default: 10.192.21.0/24
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName}
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName}
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName} Public Subnet (AZ1)
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName} Public Subnet (AZ2)
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName} Private Subnet (AZ1)
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName} Private Subnet (AZ2)
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName} Public Routes
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${VPCName}{EnvironmentName} Private Routes (AZ1)
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Private Routes (AZ2)
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  NoIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "no-ingress-sg"
+      GroupDescription: "Security group with no ingress rule"
+      VpcId: !Ref VPC
+
+  AllowVPCSubnetsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group that will allow VPC CIDR to communicate to private API Gateway"
+      GroupName: "VPC CIDR to Private API Gateway"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref VpcCIDR
+      Tags:
+        - Key: Name
+          Value: "VPC CIDR to Private API Gateway"
+
+  NSMBenefitsApiVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.execute-api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]
+      SecurityGroupIds:
+        - !Ref AllowVPCSubnetsSecurityGroup
+
+  NSMBenefitsProxyServerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: NSMBenefitsProxyServerPolicy
+      Description: IAM Policy that defines the permissions of the NSM Benefits Proxy Server.
+      # Policy Document is a copy of arn:aws:iam::579685532802:policy/NSMLambdaExecutionRole
+      # TODO - we only need logs and invoke lambda
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: VisualEditor0
+            Effect: Allow
+            Action:
+              - iam:GetPolicyVersion
+              - ds:CreateComputer
+              - logs:*
+              - sns:Unsubscribe
+              - dynamodb:*
+              - cloudformation:DescribeStackResource
+              - cloudformation:CreateChangeSet
+              - xray:PutTraceSegments
+              - iot:DescribeEndpoint
+              - kinesis:ListStreams
+              - elasticloadbalancing:DescribeLoadBalancers
+              - cognito-sync:SetCognitoEvents
+              - route53domains:*
+              - elasticbeanstalk:DescribeEnvironments
+              - secretsmanager:*
+              - iam:ListAttachedRolePolicies
+              - ec2messages:*
+              - sns:Subscribe
+              - cloudformation:DescribeChangeSet
+              - iam:ListRolePolicies
+              - events:*
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:ListStackResources
+              - states:*
+              - iam:GetRole
+              - route53:CreateHostedZone
+              - sns:ListSubscriptionsByTopic
+              - s3:GetBucketWebsite
+              - iam:GetPolicy
+              - lambda:ListFunctions
+              - iot:GetTopicRule
+              - sqs:SendMessage
+              - cloudformation:DescribeStackResources
+              - ec2:DeleteNetworkInterface
+              - cloudwatch:GetMetricStatistics
+              - cloudformation:DescribeStacks
+              - iot:CreateTopicRule
+              - ec2:CreateNetworkInterface
+              - kinesis:PutRecord
+              - cloudwatch:*
+              - cloudformation:GetTemplate
+              - cloudwatch:DescribeAlarms
+              - iot:ListPolicies
+              - ec2:DescribeSubnets
+              - iam:GetRolePolicy
+              - iot:ListThings
+              - iot:ReplaceTopicRule
+              - tag:GetResources
+              - xray:PutTelemetryRecords
+              - iot:AttachThingPrincipal
+              - ec2:DescribeRegions
+              - cognito-identity:ListIdentityPools
+              - sns:ListTopics
+              - iot:CreatePolicy
+              - s3:ListBucket
+              - iam:PassRole
+              - sns:Publish
+              - cognito-sync:GetCognitoEvents
+              - ec2:DescribeNetworkInterfaces
+              - ses:*
+              - rds:DescribeDBInstances
+              - kms:DescribeKey
+              - iot:CreateKeysAndCertificate
+              - ec2:DescribeInstanceStatus
+              - sqs:ListQueues
+              - iot:ListTopicRules
+              - iot:CreateThing
+              - s3:*
+              - iot:AttachPrincipalPolicy
+              - iam:ListRoles
+              - kinesis:DescribeStream
+              - sns:ListSubscriptions
+              - ec2:DescribeSecurityGroups
+              - kms:ListKeys
+              - ec2:DescribeVpcs
+              - kms:ListAliases
+              - ssm:*
+              - cloudfront:ListDistributions
+              - lambda:*
+              - route53:*
+              - ds:DescribeDirectories
+              - s3:GetBucketLocation
+              - rds:DescribeDBClusters
+            Resource: "*"
+          - Sid: VisualEditor1
+            Effect: Allow
+            Action:
+              - lambda:AddPermission
+              - lambda:InvokeFunction
+              - lambda:GetFunction
+            Resource: arn:aws:lambda:*:*:function:SecretsManager*
+          - Sid: VisualEditor2
+            Effect: Allow
+            Action:
+              - lambda:CreateFunction
+              - lambda:UpdateFunctionConfiguration
+            Resource: "*"
+          - Sid: VisualEditor3
+            Effect: Allow
+            Action: serverlessrepo:CreateCloudFormationChangeSet
+            Resource: "*"
+
+  NSMBenefitsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: nsm-benefits-api
+      StageName: !Ref StageName
+      MethodSettings:
+        - HttpMethod: '*'
+          ResourcePath: '/*'
+          LoggingLevel: ERROR
+      EndpointConfiguration: PRIVATE
+      Variables:
+        NSMBenefitsProxyFunctionName: !Ref NSMBenefitsProxyServer
+      DefinitionBody:
+        swagger: 2.0
+        info:
+          title: NSMBenefitsApi
+        schemes:
+          - http
+        x-amazon-apigateway-policy:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: "Allow"
+              Principal: "*"
+              Action:
+                - "execute-api:Invoke"
+              Resource: "execute-api:/*"
+              Condition:
+                StringEquals:
+                  aws:sourceVpce: !Ref NSMBenefitsApiVPCEndpoint
+        paths:
+          /:
+            x-amazon-apigateway-any-method:
+              produces:
+                - application/json
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: 200
+                uri: !Join [ ":", [ !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}", "function:${stageVariables.NSMBenefitsProxyFunctionName}/invocations"] ]
+                passthroughBehavior: when_no_match
+                httpMethod: GET
+                type: aws_proxy
+          /{proxy+}:
+            x-amazon-apigateway-any-method:
+              produces:
+                - application/json
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: 200
+                uri: !Join [ ":", [ !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}", "function:${stageVariables.NSMBenefitsProxyFunctionName}/invocations" ] ]
+                passthroughBehavior: when_no_match
+                httpMethod: ANY
+                type: aws_proxy
+        x-amazon-apigateway-binary-media-types:
+          - 'application/json'
+
+  NSMBenefitsProxyServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: NSMBenefitsProxyServer
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref NSMBenefitsProxyServerPolicy
+
+  NSMBenefitsProxyServer:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      FunctionName: nsm-benefits-proxy-server
+      Description: Proxies API gateway requests to Lambda Functions
+      MemorySize: 2000
+      Timeout: 30
+      Role: !GetAtt NSMBenefitsProxyServerRole.Arn
+      Environment:
+        Variables:
+          # Benefits lambda's ARN - may need to automate this
+          # TODO - automate the discovery of the benefits lambdas
+          wfr_benefits_integration_arn: ''
+          nsm_integration_hr_empreports_arn: ''
+          empsync_arn: ''
+      PackageType: Image
+      Architectures:
+        - x86_64
+      Events:
+        APIRoot:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /
+            Method: GET
+            RestApiId: !Ref NSMBenefitsApi
+        APIProxy:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            RestApiId: !Ref NSMBenefitsApi
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: .
+      DockerTag: python3.9-v0.1.0
+
+Outputs:
+  NSMBenefitsApi:
+    Description: "API Gateway endpoint URL for Prod stage for NSM Benefits Proxy"
+    Value: !Sub "https://${NSMBenefitsApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+
+  NSMBenefitsProxyServerFunction:
+    Description: "NSM Benefits Proxy Server Lambda Function ARN"
+    Value: !GetAtt NSMBenefitsProxyServer.Arn
+
+  NSMBenefitsProxyServerRole:
+    Description: "Implicit IAM Role created for NSM Benefits Proxy Server function"
+    Value: !GetAtt NSMBenefitsProxyServerRole.Arn
+
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+
+  PublicSubnets:
+    Description: A list of the public subnets
+    Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ] ]
+
+  PrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ] ]
+
+  PublicSubnet1:
+    Description: A reference to the public subnet in the 1st Availability Zone
+    Value: !Ref PublicSubnet1
+
+  PublicSubnet2:
+    Description: A reference to the public subnet in the 2nd Availability Zone
+    Value: !Ref PublicSubnet2
+
+  PrivateSubnet1:
+    Description: A reference to the private subnet in the 1st Availability Zone
+    Value: !Ref PrivateSubnet1
+
+  PrivateSubnet2:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet2
+
+  NoIngressSecurityGroup:
+    Description: Security group with no ingress rule
+    Value: !Ref NoIngressSecurityGroup

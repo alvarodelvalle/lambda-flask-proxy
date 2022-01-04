@@ -1,0 +1,12 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "NSMBenefitsProxy"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1ajz8g2aj4p9y"
+s3_prefix = "NSMBenefitsProxy"
+region = "us-west-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_NAMED_IAM"
+parameter_overrides = "StageName=\"Dev\" EnvironmentName=\"Dev\" VPCName=\"NSMBenefits\" VpcCIDR=\"10.192.0.0/16\" PublicSubnet1CIDR=\"10.192.10.0/24\" PublicSubnet2CIDR=\"10.192.11.0/24\" PrivateSubnet1CIDR=\"10.192.20.0/24\" PrivateSubnet2CIDR=\"10.192.21.0/24\""
+image_repositories = ["NSMBenefitsProxyServer=579685532802.dkr.ecr.us-west-2.amazonaws.com/nsmbenefitsproxy74d9c2a1/nsmbenefitsproxyserver6ba61c9drepo"]
